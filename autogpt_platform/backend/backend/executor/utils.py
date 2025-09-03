@@ -18,10 +18,12 @@ from backend.data.execution import (
     ExecutionStatus,
     GraphExecutionStats,
     GraphExecutionWithNodes,
+    UserContext,
 )
 from backend.data.graph import GraphModel, Node
 from backend.data.model import CredentialsMetaInput
 from backend.data.rabbitmq import Exchange, ExchangeType, Queue, RabbitMQConfig
+from backend.data.user import get_user_by_id
 from backend.util.clients import (
     get_async_execution_event_bus,
     get_async_execution_queue,
@@ -33,6 +35,27 @@ from backend.util.logging import TruncatedLogger
 from backend.util.mock import MockObject
 from backend.util.settings import Config
 from backend.util.type import convert
+
+
+async def get_user_context(user_id: str) -> UserContext:
+    """
+    Get UserContext for a user, always returns a valid context with timezone.
+    Defaults to UTC if user has no timezone set.
+    """
+    user_context = UserContext(timezone="UTC")  # Default to UTC
+    try:
+        user = await get_user_by_id(user_id)
+        if user and user.timezone and user.timezone != "not-set":
+            user_context.timezone = user.timezone
+            logger.debug(f"Retrieved user context: timezone={user.timezone}")
+        else:
+            logger.debug("User has no timezone set, using UTC")
+    except Exception as e:
+        logger.warning(f"Could not fetch user timezone: {e}")
+        # Continue with UTC as default
+
+    return user_context
+
 
 config = Config()
 logger = TruncatedLogger(logging.getLogger(__name__), prefix="[GraphExecutorUtil]")
@@ -548,7 +571,7 @@ async def validate_graph_with_credentials(
     return node_input_errors
 
 
-async def _construct_node_execution_input(
+async def _construct_starting_node_execution_input(
     graph: GraphModel,
     user_id: str,
     graph_inputs: BlockInput,
@@ -622,7 +645,7 @@ async def validate_and_construct_node_execution_input(
     graph_version: Optional[int] = None,
     graph_credentials_inputs: Optional[dict[str, CredentialsMetaInput]] = None,
     nodes_input_masks: Optional[dict[str, dict[str, JsonValue]]] = None,
-) -> tuple[GraphModel, list[tuple[str, BlockInput]]]:
+) -> tuple[GraphModel, list[tuple[str, BlockInput]], dict[str, dict[str, JsonValue]]]:
     """
     Public wrapper that handles graph fetching, credential mapping, and validation+construction.
     This centralizes the logic used by both scheduler validation and actual execution.
@@ -666,14 +689,14 @@ async def validate_and_construct_node_execution_input(
         nodes_input_masks or {},
     )
 
-    starting_nodes_input = await _construct_node_execution_input(
+    starting_nodes_input = await _construct_starting_node_execution_input(
         graph=graph,
         user_id=user_id,
         graph_inputs=graph_inputs,
         nodes_input_masks=nodes_input_masks,
     )
 
-    return graph, starting_nodes_input
+    return graph, starting_nodes_input, nodes_input_masks
 
 
 def _merge_nodes_input_masks(
@@ -856,13 +879,15 @@ async def add_graph_execution(
     else:
         edb = get_database_manager_async_client()
 
-    graph, starting_nodes_input = await validate_and_construct_node_execution_input(
-        graph_id=graph_id,
-        user_id=user_id,
-        graph_inputs=inputs or {},
-        graph_version=graph_version,
-        graph_credentials_inputs=graph_credentials_inputs,
-        nodes_input_masks=nodes_input_masks,
+    graph, starting_nodes_input, nodes_input_masks = (
+        await validate_and_construct_node_execution_input(
+            graph_id=graph_id,
+            user_id=user_id,
+            graph_inputs=inputs or {},
+            graph_version=graph_version,
+            graph_credentials_inputs=graph_credentials_inputs,
+            nodes_input_masks=nodes_input_masks,
+        )
     )
     graph_exec = None
 
@@ -875,8 +900,11 @@ async def add_graph_execution(
             preset_id=preset_id,
         )
 
+        # Fetch user context for the graph execution
+        user_context = await get_user_context(user_id)
+
         queue = await get_async_execution_queue()
-        graph_exec_entry = graph_exec.to_graph_execution_entry()
+        graph_exec_entry = graph_exec.to_graph_execution_entry(user_context)
         if nodes_input_masks:
             graph_exec_entry.nodes_input_masks = nodes_input_masks
 
