@@ -1,9 +1,12 @@
 #!/bin/sh
 
-kill $(lsof -t -i :8000)
+# Kill any existing processes on port 8000
+if [ -n "$(lsof -t -i :8000 2>/dev/null)" ]; then
+  kill $(lsof -t -i :8000) 2>/dev/null || true
+fi
 
 if [ ! -f .env ] && [ -z "$OPENAI_API_KEY" ]; then
-  cp .env.example .env
+  cp .env.template .env
   echo "Please add your api keys to the .env file." >&2
   # exit 1
 fi

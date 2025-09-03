@@ -191,6 +191,8 @@ async def assert_config_has_required_llm_api_keys(config: AppConfig) -> None:
     if set((config.smart_llm, config.fast_llm)).intersection(OpenAIModelName):
         from forge.llm.providers.openai import OpenAIProvider
         from openai import AuthenticationError
+        import httpcore
+        import httpx
 
         try:
             openai = OpenAIProvider()
@@ -207,13 +209,24 @@ async def assert_config_has_required_llm_api_keys(config: AppConfig) -> None:
                 + "https://docs.agpt.co/classic/original_autogpt/setup/#openai"
             )
             raise ValueError("OpenAI is unavailable: can't load credentials")
-        except AuthenticationError as e:
-            logger.error("The OpenAI API key is invalid!")
-            logger.info(
-                "For instructions to get and set a new API key: "
-                "https://docs.agpt.co/classic/original_autogpt/setup/#openai"
-            )
-            raise ValueError("OpenAI is unavailable: invalid API key") from e
+        except (AuthenticationError, httpcore.LocalProtocolError, httpx.LocalProtocolError) as e:
+            if "Illegal header value" in str(e):
+                logger.error("OpenAI API key is missing or empty!")
+                logger.info(
+                    "Set your OpenAI API key in .env or as the OPENAI_API_KEY environment variable"
+                )
+                logger.info(
+                    "For further instructions: "
+                    + "https://docs.agpt.co/classic/original_autogpt/setup/#openai"
+                )
+                raise ValueError("OpenAI is unavailable: missing API key") from e
+            else:
+                logger.error("The OpenAI API key is invalid!")
+                logger.info(
+                    "For instructions to get and set a new API key: "
+                    "https://docs.agpt.co/classic/original_autogpt/setup/#openai"
+                )
+                raise ValueError("OpenAI is unavailable: invalid API key") from e
 
 
 def _safe_split(s: Union[str, None], sep: str = ",") -> list[str]:
